@@ -25,6 +25,8 @@ import jsonschema
 from oslo_utils import reflection
 import six
 
+from six.moves import zip as compat_zip
+
 from failure import _utils as utils
 
 
@@ -33,9 +35,7 @@ class WrappedFailure(Exception):
 
     def __init__(self, failures):
         super(WrappedFailure, self).__init__()
-        if not isinstance(failures, tuple):
-            failures = tuple(failures)
-        self.failures = failures
+        self.failures = utils.to_tuple(failures)
 
 
 class Failure(object):
@@ -82,7 +82,6 @@ class Failure(object):
     backport at https://pypi.python.org/pypi/traceback2/ to (hopefully)
     simplify the methods and contents of this object...
     """
-    DICT_VERSION = 1
 
     BASE_EXCEPTIONS = ('BaseException', 'Exception')
     """
@@ -98,13 +97,13 @@ class Failure(object):
             "cause": {
                 "type": "object",
                 'properties': {
-                    'version': {
-                        "type": "integer",
-                        "minimum": 0,
-                    },
                     'exc_args': {
                         "type": "array",
                         "minItems": 0,
+                    },
+                    'exc_kwargs': {
+                        "type": "object",
+                        "additionalProperties": True,
                     },
                     'exception_str': {
                         "type": "string",
@@ -119,12 +118,10 @@ class Failure(object):
                         },
                         "minItems": 1,
                     },
-                    'causes': {
-                        "type": "array",
-                        "items": {
-                            "$ref": "#/definitions/cause",
-                        },
-                    }
+                    'cause': {
+                        "type": "object",
+                        "$ref": "#/definitions/cause",
+                    },
                 },
                 "required": [
                     "exception_str",
@@ -143,49 +140,81 @@ class Failure(object):
         else:
             return self.__unicode__()
 
-    def __init__(self, exc_info=None, **kwargs):
-        if not kwargs:
-            if exc_info is None:
-                exc_info = sys.exc_info()
-            else:
-                # This should always be the (type, value, traceback) tuple,
-                # either from a prior sys.exc_info() call or from some other
-                # creation...
-                if len(exc_info) != 3:
-                    raise ValueError("Provided 'exc_info' must contain three"
-                                     " elements")
-            self._exc_info = exc_info
-            self._exc_args = tuple(getattr(exc_info[1], 'args', []))
-            self._exc_type_names = tuple(
-                reflection.get_all_class_names(exc_info[0], up_to=Exception))
-            if not self._exc_type_names:
-                raise TypeError("Invalid exception type '%s' (%s)"
-                                % (exc_info[0], type(exc_info[0])))
-            self._exception_str = utils.exception_message(self._exc_info[1])
-            self._traceback_str = ''.join(
-                traceback.format_tb(self._exc_info[2]))
-            self._causes = kwargs.pop('causes', None)
+    def __init__(self, exc_info=None, exc_args=None,
+                 exc_kwargs=None, exception_str='',
+                 exc_type_names=None, cause=None,
+                 traceback_str=''):
+        if not exc_type_names:
+            raise TypeError("Invalid exception type (no type names"
+                            " provided)")
+        self._exc_type_names = utils.to_tuple(exc_type_names)
+        self._exc_info = utils.to_tuple(exc_info)
+        self._exc_args = utils.to_tuple(exc_args)
+        if exc_kwargs:
+            self._exc_kwargs = dict(exc_kwargs)
         else:
-            self._causes = kwargs.pop('causes', None)
-            self._exc_info = exc_info
-            self._exc_args = tuple(kwargs.pop('exc_args', []))
-            self._exception_str = kwargs.pop('exception_str')
-            self._exc_type_names = tuple(kwargs.pop('exc_type_names', []))
-            self._traceback_str = kwargs.pop('traceback_str', None)
-            if kwargs:
-                raise TypeError(
-                    'Failure.__init__ got unexpected keyword argument(s): %s'
-                    % ', '.join(six.iterkeys(kwargs)))
+            self._exc_kwargs = {}
+        self._exception_str = exception_str
+        self._cause = cause
+        self._traceback_str = traceback_str
 
     @classmethod
-    def from_exception(cls, exception):
+    def from_exc_info(cls, exc_info=None, retain_exc_info=True):
+        """Creates a failure object from a ``sys.exc_info()`` tuple."""
+        if exc_info is None:
+            exc_info = sys.exc_info()
+            if not any(exc_info):
+                raise RuntimeError("No exception currently being handled")
+        # This should always be the (type, value, traceback) tuple,
+        # either from a prior sys.exc_info() call or from some other
+        # creation...
+        if len(exc_info) != 3:
+            raise ValueError("Provided 'exc_info' must contain three"
+                             " elements")
+        exc_type, exc_val, exc_tb = exc_info
+        try:
+            if exc_type is None or exc_val is None:
+                raise ValueError("Invalid exception tuple (exception"
+                                 " type and exception value must"
+                                 " be provided)")
+            exc_args = tuple(getattr(exc_val, 'args', []))
+            exc_kwargs = dict(getattr(exc_val, 'kwargs', {}))
+            exc_type_names = tuple(
+                reflection.get_all_class_names(exc_type, up_to=Exception))
+            if not exc_type_names:
+                # This should only be possible if the exception provided
+                # was not really an exception...
+                raise TypeError("Invalid exception type '%s' (not an"
+                                " exception)" % (exc_type))
+            exception_str = utils.exception_message(exc_val)
+            if hasattr(exc_val, '__traceback_str__'):
+                traceback_str = exc_val.__traceback_str__
+            else:
+                if exc_tb is not None:
+                    traceback_str = '\n'.join(
+                        traceback.format_exception(*exc_info))
+                else:
+                    traceback_str = ''
+            if not retain_exc_info:
+                exc_info = None
+            return cls(exc_info=exc_info, exc_args=exc_args,
+                       exc_kwargs=exc_kwargs, exception_str=exception_str,
+                       exc_type_names=exc_type_names,
+                       cause=cls._extract_cause(exc_val),
+                       traceback_str=traceback_str)
+        finally:
+            del exc_type, exc_val, exc_tb
+
+    @classmethod
+    def from_exception(cls, exception, retain_exc_info=True):
         """Creates a failure object from a exception instance."""
         exc_info = (
             type(exception),
             exception,
             getattr(exception, '__traceback__', None)
         )
-        return cls(exc_info=exc_info)
+        return cls.from_exc_info(exc_info=exc_info,
+                                 retain_exc_info=retain_exc_info)
 
     @classmethod
     def validate(cls, data):
@@ -200,7 +229,7 @@ class Failure(object):
                              " expected format: %s" % (e.message))
         else:
             # Ensure that all 'exc_type_names' originate from one of
-            # BASE_EXCEPTIONS, because those are the root exceptions that
+            # base exceptions, because those are the root exceptions that
             # python mandates/provides and anything else is invalid...
             causes = collections.deque([data])
             while causes:
@@ -212,18 +241,19 @@ class Failure(object):
                         " have an initial exception type that is one"
                         " of %s types: '%s' is not one of those"
                         " types" % (cls.BASE_EXCEPTIONS, root_exc_type))
-                sub_causes = cause.get('causes')
-                if sub_causes:
-                    causes.extend(sub_causes)
+                sub_cause = cause.get('cause')
+                if sub_cause is not None:
+                    causes.extend([sub_cause])
 
     def _matches(self, other):
         if self is other:
             return True
-        return (self._exc_type_names == other._exc_type_names and
+        return (self.exception_type_names == other.exception_type_names and
                 self.exception_args == other.exception_args and
+                self.exception_kwargs == other.exception_kwargs and
                 self.exception_str == other.exception_str and
                 self.traceback_str == other.traceback_str and
-                self.causes == other.causes)
+                self.cause == other.cause)
 
     def matches(self, other):
         """Checks if another object is equivalent to this object.
@@ -277,6 +307,16 @@ class Failure(object):
         return self._exc_args
 
     @property
+    def exception_kwargs(self):
+        """Dict of keyword arguments given to the exception constructor."""
+        return self._exc_kwargs
+
+    @property
+    def exception_type_names(self):
+        """Tuple of current exception type **names** (upto ``Exception``)."""
+        return self._exc_type_names
+
+    @property
     def exc_info(self):
         """Exception info tuple or none.
 
@@ -292,7 +332,9 @@ class Failure(object):
         return self._traceback_str
 
     @staticmethod
-    def reraise_if_any(failures):
+    def reraise_if_any(failures,
+                       allowed_remote_classes=None,
+                       allowed_remote_modules=None):
         """Re-raise exceptions if argument is not empty.
 
         If argument is empty list/tuple/iterator, this method returns
@@ -305,16 +347,65 @@ class Failure(object):
             # Convert generators/other into a list...
             failures = list(failures)
         if len(failures) == 1:
-            failures[0].reraise()
+            failures[0].reraise(
+                allowed_remote_classes=allowed_remote_classes,
+                allowed_remote_modules=allowed_remote_modules)
         elif len(failures) > 1:
             raise WrappedFailure(failures)
 
-    def reraise(self):
-        """Re-raise captured exception."""
+    def reraise(self, allowed_remote_classes=None,
+                allowed_remote_modules=None):
+        """Re-raise captured exception (possibly trying to recreate)."""
         if self._exc_info:
             six.reraise(*self._exc_info)
         else:
-            raise WrappedFailure([self])
+            if allowed_remote_classes is None:
+                allowed_remote_classes = []
+            if allowed_remote_modules is None:
+                allowed_remote_modules = []
+            if not any([allowed_remote_classes, allowed_remote_modules]):
+                raise WrappedFailure([self])
+            allowed_remote_class_names = [
+                reflection.get_class_name(cls)
+                for cls in allowed_remote_classes]
+            causes = [self] + list(self.iter_causes())
+            cause_classes = []
+            for cause in causes:
+                cause_type_name = cause.exception_type_names[0]
+                cls_idx = -1
+                try:
+                    cls_idx = allowed_remote_class_names.index(cause_type_name)
+                except ValueError:
+                    pass
+                if cls_idx != -1:
+                    cause_classes.append(allowed_remote_classes[cls_idx])
+                else:
+                    # TODO(harlowja): needs finishing.
+                    maybe_mods = []
+                    for mod in allowed_remote_modules:
+                        if cause_type_name.startswith(mod):
+                            maybe_mods.append(mod)
+            if len(cause_classes) != len(causes):
+                raise WrappedFailure([self])
+            else:
+                # Attempt to regenerate the full chain (and then raise
+                # from the root); without a traceback, oh well...
+                root = None
+                parent = None
+                for cause, cause_cls in compat_zip(causes, cause_classes):
+                    exc = cause_cls(
+                        *cause.exception_args, **cause.exception_kwargs)
+                    # Saving this will ensure that if this same exception
+                    # is serialized again that we will extract the traceback
+                    # from it directly (thus proxying along the original
+                    # traceback as much as we can).
+                    exc.__traceback_str__ = cause.traceback_str
+                    if root is None:
+                        root = exc
+                    if parent is not None:
+                        parent.__cause__ = exc
+                    parent = exc
+                six.reraise(type(root), root, tb=None)
 
     def check(self, *exc_classes):
         """Check if any of ``exc_classes`` caused the failure.
@@ -326,72 +417,24 @@ class Failure(object):
         """
         for cls in exc_classes:
             if isinstance(cls, type):
-                err = reflection.get_class_name(cls)
+                cls_name = reflection.get_class_name(cls)
             else:
-                err = cls
-            if err in self._exc_type_names:
+                cls_name = cls
+            if cls_name in self._exc_type_names:
                 return cls
         return None
 
-    @classmethod
-    def _extract_causes_iter(cls, exc_val):
-        seen = [exc_val]
-        causes = [exc_val]
-        while causes:
-            exc_val = causes.pop()
-            if exc_val is None:
-                continue
-            # See: https://www.python.org/dev/peps/pep-3134/ for why/what
-            # these are...
-            #
-            # '__cause__' attribute for explicitly chained exceptions
-            # '__context__' attribute for implicitly chained exceptions
-            # '__traceback__' attribute for the traceback
-            #
-            # See: https://www.python.org/dev/peps/pep-0415/ for why/what
-            # the '__suppress_context__' is/means/implies...
-            suppress_context = getattr(exc_val,
-                                       '__suppress_context__', False)
-            if suppress_context:
-                attr_lookups = ['__cause__']
-            else:
-                attr_lookups = ['__cause__', '__context__']
-            nested_exc_val = None
-            for attr_name in attr_lookups:
-                attr_val = getattr(exc_val, attr_name, None)
-                if attr_val is None:
-                    continue
-                if attr_val not in seen:
-                    nested_exc_val = attr_val
-                    break
-            if nested_exc_val is not None:
-                exc_info = (
-                    type(nested_exc_val),
-                    nested_exc_val,
-                    getattr(nested_exc_val, '__traceback__', None),
-                )
-                seen.append(nested_exc_val)
-                causes.append(nested_exc_val)
-                yield cls(exc_info=exc_info)
-
     @property
-    def causes(self):
-        """Tuple of all *inner* failure *causes* of this failure.
+    def cause(self):
+        """Nested failure *cause* of this failure.
 
-        NOTE(harlowja): Does **not** include the current failure (only
-        returns connected causes of this failure, if any). This property
-        is really only useful on 3.x or newer versions of python as older
-        versions do **not** have associated causes (the tuple will **always**
-        be empty on 2.x versions of python).
+        This property is typically only useful on 3.x or newer versions
+        of python as older versions do **not** have associated causes.
 
         Refer to :pep:`3134` and :pep:`409` and :pep:`415` for what
         this is examining to find failure causes.
         """
-        if self._causes is not None:
-            return self._causes
-        else:
-            self._causes = tuple(self._extract_causes_iter(self.exception))
-            return self._causes
+        return self._cause
 
     def __unicode__(self):
         return self.pformat()
@@ -411,18 +454,18 @@ class Failure(object):
                 traceback_str = None
             if traceback_str:
                 buf.write(os.linesep)
-                buf.write('Traceback (most recent call last):')
-                buf.write(os.linesep)
                 buf.write(traceback_str)
             else:
                 buf.write(os.linesep)
                 buf.write('Traceback not available.')
         return buf.getvalue()
 
-    def __iter__(self):
-        """Iterate over exception type names."""
-        for et in self._exc_type_names:
-            yield et
+    def iter_causes(self):
+        """Iterate over all causes."""
+        curr = self._cause
+        while curr is not None:
+            yield curr
+            curr = curr._cause
 
     def __getstate__(self):
         dct = self.to_dict()
@@ -439,6 +482,10 @@ class Failure(object):
             # Guess we got an older version somehow, before this
             # was added, so at that point just set to an empty tuple...
             self._exc_args = ()
+        if 'exc_kwargs' in dct:
+            self._exc_kwargs = dict(dct['exc_kwargs'])
+        else:
+            self._exc_kwargs = {}
         self._traceback_str = dct['traceback_str']
         self._exc_type_names = dct['exc_type_names']
         if 'exc_info' in dct:
@@ -453,47 +500,82 @@ class Failure(object):
             exc_info = list(dct['exc_info'])
             while len(exc_info) < 3:
                 dct['exc_info'].append(None)
-            self._exc_info = tuple(exc_info)
+            self._exc_info = tuple(exc_info[0:3])
         else:
             self._exc_info = None
-        causes = dct.get('causes')
-        if causes is not None:
-            causes = tuple(self.from_dict(d) for d in causes)
-        self._causes = causes
+        cause = dct.get('cause')
+        if cause is not None:
+            cause = self.from_dict(cause)
+        self._cause = cause
+
+    @classmethod
+    def _extract_cause(cls, exc_val):
+        """Helper routine to extract nested cause (if any)."""
+        # See: https://www.python.org/dev/peps/pep-3134/ for why/what
+        # these are...
+        #
+        # '__cause__' attribute for explicitly chained exceptions
+        # '__context__' attribute for implicitly chained exceptions
+        # '__traceback__' attribute for the traceback
+        #
+        # See: https://www.python.org/dev/peps/pep-0415/ for why/what
+        # the '__suppress_context__' is/means/implies...
+        suppress_context = getattr(exc_val,
+                                   '__suppress_context__', False)
+        if suppress_context:
+            attr_lookups = ['__cause__']
+        else:
+            attr_lookups = ['__cause__', '__context__']
+        nested_exc_val = None
+        for attr_name in attr_lookups:
+            attr_val = getattr(exc_val, attr_name, None)
+            if attr_val is None:
+                continue
+            nested_exc_val = attr_val
+            break
+        if nested_exc_val is not None:
+            return cls.from_exception(nested_exc_val)
+        else:
+            return None
 
     @classmethod
     def from_dict(cls, data):
         """Converts this from a dictionary to a object."""
         data = dict(data)
-        version = data.pop('version', None)
-        if version != cls.DICT_VERSION:
-            raise ValueError('Invalid dict version of failure object: %r'
-                             % version)
-        causes = data.get('causes')
-        if causes is not None:
-            data['causes'] = tuple(cls.from_dict(d) for d in causes)
+        cause = data.get('cause')
+        if cause is not None:
+            data['cause'] = cls.from_dict(cause)
         return cls(**data)
 
-    def to_dict(self, include_args=True):
+    def to_dict(self, include_args=True, include_kwargs=True):
         """Converts this object to a dictionary.
 
         :param include_args: boolean indicating whether to include the
                              exception args in the output.
+        :param include_kwargs: boolean indicating whether to include the
+                               exception kwargs in the output.
         """
-        return {
+        data = {
             'exception_str': self.exception_str,
             'traceback_str': self.traceback_str,
-            'exc_type_names': list(self),
-            'version': self.DICT_VERSION,
+            'exc_type_names': self.exception_type_names,
             'exc_args': self.exception_args if include_args else tuple(),
-            'causes': [f.to_dict() for f in self.causes],
+            'exc_kwargs': self.exception_kwargs if include_kwargs else {},
         }
+        if self._cause is not None:
+            data['cause'] = self._cause.to_dict(include_args=include_args,
+                                                include_kwargs=include_kwargs)
+        return data
 
     def copy(self):
         """Copies this object."""
+        cause = self._cause
+        if cause is not None:
+            cause = cause.copy()
         return Failure(exc_info=utils.copy_exc_info(self.exc_info),
                        exception_str=self.exception_str,
                        traceback_str=self.traceback_str,
-                       exc_args=self.exception_args,
+                       exc_args=self.exception_args[:],
+                       exc_kwargs=self.exception_kwargs.copy(),
                        exc_type_names=self._exc_type_names[:],
-                       causes=self._causes)
+                       cause=cause)

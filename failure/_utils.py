@@ -19,18 +19,26 @@ import traceback
 
 from oslo_utils import encodeutils
 
-
 exception_message = encodeutils.exception_to_unicode
+
+
+def to_tuple(vals, on_none=()):
+    if isinstance(vals, tuple):
+        return vals
+    else:
+        if vals is None:
+            return on_none
+        return tuple(vals)
 
 
 def copy_exc_info(exc_info):
     if exc_info is None:
         return None
-    exc_type, exc_value, tb = exc_info
+    exc_type, exc_value, exc_tb = exc_info
     # NOTE(imelnikov): there is no need to copy the exception type, and
     # a shallow copy of the value is fine and we can't copy the traceback since
     # it contains reference to the internal stack frames...
-    return (exc_type, copy.copy(exc_value), tb)
+    return (exc_type, copy.copy(exc_value), exc_tb)
 
 
 def are_equal_exc_info_tuples(ei1, ei2):
