@@ -366,7 +366,7 @@ class Failure(object):
             if not any([allowed_remote_classes, allowed_remote_modules]):
                 raise WrappedFailure([self])
             allowed_remote_class_names = [
-                reflection.get_class_name(cls)
+                reflection.get_class_name(cls, truncate_builtins=False)
                 for cls in allowed_remote_classes]
             causes = [self] + list(self.iter_causes())
             cause_classes = []
@@ -380,7 +380,6 @@ class Failure(object):
                 if cls_idx != -1:
                     cause_classes.append(allowed_remote_classes[cls_idx])
                 else:
-                    # TODO(harlowja): needs finishing.
                     maybe_mods = []
                     for mod in allowed_remote_modules:
                         if cause_type_name.startswith(mod):
