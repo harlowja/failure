@@ -16,10 +16,35 @@
 
 import copy
 import traceback
+import types
 
 from oslo_utils import encodeutils
+from oslo_utils import reflection
 
 exception_message = encodeutils.exception_to_unicode
+
+
+def mod_to_mod_name(mod):
+    if isinstance(mod, types.ModuleType):
+        mod_name = mod.__name__
+    else:
+        mod_name = str(mod)
+    return mod_name
+
+
+def cls_to_cls_name(cls):
+    if isinstance(cls, type):
+        cls_name = reflection.get_class_name(cls, truncate_builtins=False)
+    else:
+        cls_name = str(cls)
+    return cls_name
+
+
+def array_prefix_matches(src, cmp_to, on_src_empty=False):
+    src_len = len(src)
+    if src_len == 0:
+        return on_src_empty
+    return cmp_to[0:src_len] == src
 
 
 def to_tuple(vals, on_none=()):

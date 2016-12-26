@@ -17,17 +17,31 @@
 from __future__ import absolute_import
 
 import collections
+import itertools
 import os
 import sys
 import traceback
 
 import jsonschema
+from oslo_utils import importutils
 from oslo_utils import reflection
 import six
 
-from six.moves import zip as compat_zip
-
 from failure import _utils as utils
+
+
+def _py2_str(self):
+    return self.__unicode__().encode('utf-8')
+
+
+def _py3_str(self):
+    return self.__unicode__()
+
+
+if six.PY2:
+    _py_str = _py2_str
+else:
+    _py_str = _py3_str
 
 
 class WrappedFailure(Exception):
@@ -83,9 +97,16 @@ class Failure(object):
     simplify the methods and contents of this object...
     """
 
-    BASE_EXCEPTIONS = ('BaseException', 'Exception')
+    BASE_EXCEPTION = BaseException
     """
-    Root exceptions of all other python exceptions.
+    Root exception of all other python exceptions (as a type).
+
+    See: https://docs.python.org/2/library/exceptions.html
+    """
+
+    BASE_EXCEPTIONS = ('exceptions.BaseException', 'exceptions.Exception')
+    """
+    Root exceptions of all other python exceptions (as a string).
 
     See: https://docs.python.org/2/library/exceptions.html
     """
@@ -133,12 +154,7 @@ class Failure(object):
         },
     }
 
-    def __str__(self):
-        # Prefer a bytes string on py2.x
-        if six.PY2:
-            return self.__unicode__().encode('utf-8')
-        else:
-            return self.__unicode__()
+    __str__ = _py_str
 
     def __init__(self, exc_info=None, exc_args=None,
                  exc_kwargs=None, exception_str='',
@@ -180,12 +196,14 @@ class Failure(object):
             exc_args = tuple(getattr(exc_val, 'args', []))
             exc_kwargs = dict(getattr(exc_val, 'kwargs', {}))
             exc_type_names = tuple(
-                reflection.get_all_class_names(exc_type, up_to=Exception))
+                reflection.get_all_class_names(
+                    exc_type, up_to=cls.BASE_EXCEPTION,
+                    truncate_builtins=False))
             if not exc_type_names:
                 # This should only be possible if the exception provided
                 # was not really an exception...
                 raise TypeError("Invalid exception type '%s' (not an"
-                                " exception)" % (exc_type))
+                                " exception)" % (exc_type,))
             exception_str = utils.exception_message(exc_val)
             if hasattr(exc_val, '__traceback_str__'):
                 traceback_str = exc_val.__traceback_str__
@@ -243,7 +261,7 @@ class Failure(object):
                         " types" % (cls.BASE_EXCEPTIONS, root_exc_type))
                 sub_cause = cause.get('cause')
                 if sub_cause is not None:
-                    causes.extend([sub_cause])
+                    causes.append(sub_cause)
 
     def _matches(self, other):
         if self is other:
@@ -353,6 +371,64 @@ class Failure(object):
         elif len(failures) > 1:
             raise WrappedFailure(failures)
 
+    @classmethod
+    def _iter_caused_by(cls, causes_iter, allowed_remote_classes,
+                        allowed_remote_modules):
+        in_allowed_remote_classes = allowed_remote_classes
+        allowed_remote_classes = [
+            utils.cls_to_cls_name(tmp_cls)
+            for tmp_cls in in_allowed_remote_classes
+        ]
+        in_allowed_remote_modules = allowed_remote_modules
+        allowed_remote_modules = [
+            utils.mod_to_mod_name(tmp_mod).split(".")
+            for tmp_mod in in_allowed_remote_modules
+        ]
+        for cause in causes_iter:
+            src_cls_idx = -1
+            src_mod_idx = -1
+            try:
+                cause_type_name = cause.exception_type_names[0]
+            except IndexError:
+                pass
+            else:
+                try:
+                    src_cls_idx = allowed_remote_classes.index(
+                        cause_type_name)
+                except ValueError:
+                    # Rip off the class name (usually at the end).
+                    cause_type_name_pieces = cause_type_name.split(".")
+                    cause_type_name_mod_pieces = cause_type_name_pieces[0:-1]
+                    # Pick the longest module that matches and if we find
+                    # one then we might use it so that we can import the
+                    # class this 'cause' came from (without worrying about
+                    # issues).
+                    max_mod_len = 0
+                    for i, mod_pieces in enumerate(allowed_remote_modules):
+                        if (utils.array_prefix_matches(
+                                mod_pieces, cause_type_name_mod_pieces)):
+                            mod_len = len(mod_pieces)
+                            if mod_len > max_mod_len:
+                                max_mod_len = mod_len
+                                src_mod_idx = i
+            src_cls = None
+            src_mod = None
+            if src_cls_idx != -1:
+                src_cls = in_allowed_remote_classes[src_cls_idx]
+            if src_mod_idx != -1:
+                src_mod = in_allowed_remote_modules[src_mod_idx]
+            # Try to extract the class from the module if we found a useable
+            # module, but not a useable class...
+            if src_cls is None and src_mod is not None:
+                try:
+                    tmp_src_cls = importutils.import_class(cause_type_name)
+                except ImportError:
+                    pass
+                else:
+                    if issubclass(tmp_src_cls, cls.BASE_EXCEPTION):
+                        src_cls = tmp_src_cls
+            yield (cause, src_cls)
+
     def reraise(self, allowed_remote_classes=None,
                 allowed_remote_modules=None):
         """Re-raise captured exception (possibly trying to recreate)."""
@@ -363,48 +439,30 @@ class Failure(object):
                 allowed_remote_classes = []
             if allowed_remote_modules is None:
                 allowed_remote_modules = []
-            if not any([allowed_remote_classes, allowed_remote_modules]):
-                raise WrappedFailure([self])
-            allowed_remote_class_names = [
-                reflection.get_class_name(cls, truncate_builtins=False)
-                for cls in allowed_remote_classes]
-            causes = [self] + list(self.iter_causes())
-            cause_classes = []
-            for cause in causes:
-                cause_type_name = cause.exception_type_names[0]
-                cls_idx = -1
-                try:
-                    cls_idx = allowed_remote_class_names.index(cause_type_name)
-                except ValueError:
-                    pass
-                if cls_idx != -1:
-                    cause_classes.append(allowed_remote_classes[cls_idx])
-                else:
-                    maybe_mods = []
-                    for mod in allowed_remote_modules:
-                        if cause_type_name.startswith(mod):
-                            maybe_mods.append(mod)
-            if len(cause_classes) != len(causes):
-                raise WrappedFailure([self])
-            else:
-                # Attempt to regenerate the full chain (and then raise
-                # from the root); without a traceback, oh well...
-                root = None
-                parent = None
-                for cause, cause_cls in compat_zip(causes, cause_classes):
-                    exc = cause_cls(
-                        *cause.exception_args, **cause.exception_kwargs)
-                    # Saving this will ensure that if this same exception
-                    # is serialized again that we will extract the traceback
-                    # from it directly (thus proxying along the original
-                    # traceback as much as we can).
-                    exc.__traceback_str__ = cause.traceback_str
-                    if root is None:
-                        root = exc
-                    if parent is not None:
-                        parent.__cause__ = exc
-                    parent = exc
-                six.reraise(type(root), root, tb=None)
+            caused_by_iter = self._iter_caused_by(
+                itertools.chain([self], self.iter_causes()),
+                allowed_remote_classes, allowed_remote_modules)
+            # Attempt to regenerate the full chain (and then raise
+            # from the root); without a traceback, oh well...
+            root = None
+            parent = None
+            for cause, cause_cls in caused_by_iter:
+                if cause_cls is None:
+                    # Unable to find where this cause came from, give up...
+                    raise WrappedFailure([self])
+                exc = cause_cls(
+                    *cause.exception_args, **cause.exception_kwargs)
+                # Saving this will ensure that if this same exception
+                # is serialized again that we will extract the traceback
+                # from it directly (thus proxying along the original
+                # traceback as much as we can).
+                exc.__traceback_str__ = cause.traceback_str
+                if root is None:
+                    root = exc
+                if parent is not None:
+                    parent.__cause__ = exc
+                parent = exc
+            six.reraise(type(root), root, tb=None)
 
     def check(self, *exc_classes):
         """Check if any of ``exc_classes`` caused the failure.
@@ -415,10 +473,7 @@ class Failure(object):
         returned. Else, None is returned.
         """
         for cls in exc_classes:
-            if isinstance(cls, type):
-                cls_name = reflection.get_class_name(cls)
-            else:
-                cls_name = cls
+            cls_name = utils.cls_to_cls_name(cls)
             if cls_name in self._exc_type_names:
                 return cls
         return None
