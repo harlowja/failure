@@ -203,7 +203,11 @@ class Failure(object):
                         "minItems": 1,
                     },
                     'generated_on': {
-                        "type": "number",
+                        "type": "array",
+                        "items": {
+                            "type": "number",
+                        },
+                        "minItems": 1,
                     },
                     'cause': {
                         "type": "object",
@@ -241,7 +245,7 @@ class Failure(object):
         self._exception_str = exception_str
         self._cause = cause
         self._traceback_str = traceback_str
-        self._generated_on = generated_on
+        self._generated_on = utils.to_tuple(generated_on, on_none=None)
 
     @classmethod
     def from_exc_info(cls, exc_info=None, retain_exc_info=True):
@@ -286,7 +290,7 @@ class Failure(object):
                        exc_type_names=exc_type_names,
                        cause=cls._extract_cause(exc_val),
                        traceback_str=traceback_str,
-                       generated_on=sys.version_info[0])
+                       generated_on=sys.version_info[0:2])
         finally:
             del exc_type, exc_val, exc_tb
 
@@ -320,8 +324,9 @@ class Failure(object):
             while causes:
                 cause = causes.popleft()
                 try:
-                    ok_bases = cls.BASE_EXCEPTIONS[cause['generated_on']]
-                except KeyError:
+                    generated_on = cause['generated_on']
+                    ok_bases = cls.BASE_EXCEPTIONS[generated_on[0]]
+                except (KeyError, IndexError):
                     ok_bases = []
                 root_exc_type = cause['exc_type_names'][-1]
                 if root_exc_type not in ok_bases:
@@ -388,7 +393,10 @@ class Failure(object):
 
     @property
     def generated_on(self):
-        """Python major version this failure was generated on."""
+        """Python major & minor version tuple this failure was generated on.
+
+        May be ``None`` if not provided during creation (or after if lost).
+        """
         return self._generated_on
 
     @property
@@ -413,7 +421,7 @@ class Failure(object):
 
     @property
     def exc_info(self):
-        """Exception info tuple or none.
+        """Exception info tuple or ``None``.
 
         See: https://docs.python.org/2/library/sys.html#sys.exc_info for what
              the contents of this tuple are (if none, then no contents can
