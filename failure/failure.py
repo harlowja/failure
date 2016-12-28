@@ -416,7 +416,7 @@ class Failure(object):
 
     @property
     def exception_type_names(self):
-        """Tuple of current exception type **names**."""
+        """Tuple of current exception type **names** (in MRO order)."""
         return self._exc_type_names
 
     @property
