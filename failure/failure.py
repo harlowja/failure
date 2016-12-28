@@ -23,7 +23,6 @@ import sys
 import traceback
 
 import jsonschema
-from oslo_utils import importutils
 from oslo_utils import reflection
 import six
 
@@ -95,13 +94,6 @@ class Failure(object):
     TODO(harlowja): use parts of http://bugs.python.org/issue17911 and the
     backport at https://pypi.python.org/pypi/traceback2/ to (hopefully)
     simplify the methods and contents of this object...
-    """
-
-    BASE_EXCEPTION = BaseException
-    """
-    Root exception of all other python exceptions (as a type).
-
-    See: https://docs.python.org/2/library/exceptions.html
     """
 
     BASE_EXCEPTIONS = ('exceptions.BaseException', 'exceptions.Exception')
@@ -197,7 +189,7 @@ class Failure(object):
             exc_kwargs = dict(getattr(exc_val, 'kwargs', {}))
             exc_type_names = tuple(
                 reflection.get_all_class_names(
-                    exc_type, up_to=cls.BASE_EXCEPTION,
+                    exc_type, up_to=BaseException,
                     truncate_builtins=False))
             if not exc_type_names:
                 # This should only be possible if the exception provided
@@ -350,9 +342,7 @@ class Failure(object):
         return self._traceback_str
 
     @staticmethod
-    def reraise_if_any(failures,
-                       allowed_remote_classes=None,
-                       allowed_remote_modules=None):
+    def reraise_if_any(failures, cause_cls_finder=None):
         """Re-raise exceptions if argument is not empty.
 
         If argument is empty list/tuple/iterator, this method returns
@@ -365,88 +355,24 @@ class Failure(object):
             # Convert generators/other into a list...
             failures = list(failures)
         if len(failures) == 1:
-            failures[0].reraise(
-                allowed_remote_classes=allowed_remote_classes,
-                allowed_remote_modules=allowed_remote_modules)
+            failures[0].reraise(cause_cls_finder=cause_cls_finder)
         elif len(failures) > 1:
             raise WrappedFailure(failures)
 
-    @classmethod
-    def _iter_caused_by(cls, causes_iter, allowed_remote_classes,
-                        allowed_remote_modules):
-        in_allowed_remote_classes = allowed_remote_classes
-        allowed_remote_classes = [
-            utils.cls_to_cls_name(tmp_cls)
-            for tmp_cls in in_allowed_remote_classes
-        ]
-        in_allowed_remote_modules = allowed_remote_modules
-        allowed_remote_modules = [
-            utils.mod_to_mod_name(tmp_mod).split(".")
-            for tmp_mod in in_allowed_remote_modules
-        ]
-        for cause in causes_iter:
-            src_cls_idx = -1
-            src_mod_idx = -1
-            try:
-                cause_type_name = cause.exception_type_names[0]
-            except IndexError:
-                pass
-            else:
-                try:
-                    src_cls_idx = allowed_remote_classes.index(
-                        cause_type_name)
-                except ValueError:
-                    # Rip off the class name (usually at the end).
-                    cause_type_name_pieces = cause_type_name.split(".")
-                    cause_type_name_mod_pieces = cause_type_name_pieces[0:-1]
-                    # Pick the longest module that matches and if we find
-                    # one then we might use it so that we can import the
-                    # class this 'cause' came from (without worrying about
-                    # issues).
-                    max_mod_len = 0
-                    for i, mod_pieces in enumerate(allowed_remote_modules):
-                        if (utils.array_prefix_matches(
-                                mod_pieces, cause_type_name_mod_pieces)):
-                            mod_len = len(mod_pieces)
-                            if mod_len > max_mod_len:
-                                max_mod_len = mod_len
-                                src_mod_idx = i
-            src_cls = None
-            src_mod = None
-            if src_cls_idx != -1:
-                src_cls = in_allowed_remote_classes[src_cls_idx]
-            if src_mod_idx != -1:
-                src_mod = in_allowed_remote_modules[src_mod_idx]
-            # Try to extract the class from the module if we found a useable
-            # module, but not a useable class...
-            if src_cls is None and src_mod is not None:
-                try:
-                    tmp_src_cls = importutils.import_class(cause_type_name)
-                except ImportError:
-                    pass
-                else:
-                    if issubclass(tmp_src_cls, cls.BASE_EXCEPTION):
-                        src_cls = tmp_src_cls
-            yield (cause, src_cls)
-
-    def reraise(self, allowed_remote_classes=None,
-                allowed_remote_modules=None):
+    def reraise(self, cause_cls_finder=None):
         """Re-raise captured exception (possibly trying to recreate)."""
         if self._exc_info:
             six.reraise(*self._exc_info)
         else:
-            if allowed_remote_classes is None:
-                allowed_remote_classes = []
-            if allowed_remote_modules is None:
-                allowed_remote_modules = []
-            caused_by_iter = self._iter_caused_by(
-                itertools.chain([self], self.iter_causes()),
-                allowed_remote_classes, allowed_remote_modules)
             # Attempt to regenerate the full chain (and then raise
             # from the root); without a traceback, oh well...
             root = None
             parent = None
-            for cause, cause_cls in caused_by_iter:
+            for cause in itertools.chain([self], self.iter_causes()):
+                if cause_cls_finder is not None:
+                    cause_cls = cause_cls_finder(cause)
+                else:
+                    cause_cls = None
                 if cause_cls is None:
                     # Unable to find where this cause came from, give up...
                     raise WrappedFailure([self])
