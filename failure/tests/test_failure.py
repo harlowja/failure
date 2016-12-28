@@ -237,7 +237,8 @@ class FailureObjectTestCase(base.BaseTestCase):
             exception_str=captured.exception_str,
             traceback_str=captured.traceback_str,
             exc_type_names=captured.exception_type_names,
-            exc_args=captured.exception_args)
+            exc_args=captured.exception_args,
+            generated_on=captured.generated_on)
         self.assertFalse(fail_obj == captured)
         self.assertTrue(fail_obj != captured)
         self.assertTrue(fail_obj.matches(captured))

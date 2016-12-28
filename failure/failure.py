@@ -162,7 +162,12 @@ class Failure(object):
     simplify the methods and contents of this object...
     """
 
-    BASE_EXCEPTIONS = ('exceptions.BaseException', 'exceptions.Exception')
+    BASE_EXCEPTIONS = {
+        # py2.x old/legacy names...
+        2: ('exceptions.BaseException', 'exceptions.Exception'),
+        # py3.x new names...
+        3: ('builtins.BaseException', 'builtins.Exception'),
+    }
     """
     Root exceptions of all other python exceptions (as a string).
 
@@ -197,6 +202,9 @@ class Failure(object):
                         },
                         "minItems": 1,
                     },
+                    'generated_on': {
+                        "type": "number",
+                    },
                     'cause': {
                         "type": "object",
                         "$ref": "#/definitions/cause",
@@ -206,6 +214,7 @@ class Failure(object):
                     "exception_str",
                     'traceback_str',
                     'exc_type_names',
+                    'generated_on',
                 ],
                 "additionalProperties": True,
             },
@@ -217,7 +226,7 @@ class Failure(object):
     def __init__(self, exc_info=None, exc_args=None,
                  exc_kwargs=None, exception_str='',
                  exc_type_names=None, cause=None,
-                 traceback_str=''):
+                 traceback_str='', generated_on=None):
         exc_type_names = utils.to_tuple(exc_type_names)
         if not exc_type_names:
             raise ValueError("Invalid exception type (no type names"
@@ -232,6 +241,7 @@ class Failure(object):
         self._exception_str = exception_str
         self._cause = cause
         self._traceback_str = traceback_str
+        self._generated_on = generated_on
 
     @classmethod
     def from_exc_info(cls, exc_info=None, retain_exc_info=True):
@@ -275,7 +285,8 @@ class Failure(object):
                        exc_kwargs=exc_kwargs, exception_str=exception_str,
                        exc_type_names=exc_type_names,
                        cause=cls._extract_cause(exc_val),
-                       traceback_str=traceback_str)
+                       traceback_str=traceback_str,
+                       generated_on=sys.version_info[0])
         finally:
             del exc_type, exc_val, exc_tb
 
@@ -305,16 +316,19 @@ class Failure(object):
             # Ensure that all 'exc_type_names' originate from one of
             # base exceptions, because those are the root exceptions that
             # python mandates/provides and anything else is invalid...
+            ok_bases = []
+            for py_ver in sorted(cls.BASE_EXCEPTIONS.keys()):
+                ok_bases.extend(cls.BASE_EXCEPTIONS[py_ver])
             causes = collections.deque([data])
             while causes:
                 cause = causes.popleft()
                 root_exc_type = cause['exc_type_names'][-1]
-                if root_exc_type not in cls.BASE_EXCEPTIONS:
+                if root_exc_type not in ok_bases:
                     raise InvalidFormat(
                         "Failure data 'exc_type_names' must"
                         " have an initial exception type that is one"
                         " of %s types: '%s' is not one of those"
-                        " types" % (cls.BASE_EXCEPTIONS, root_exc_type))
+                        " types" % (ok_bases, root_exc_type))
                 sub_cause = cause.get('cause')
                 if sub_cause is not None:
                     causes.append(sub_cause)
@@ -327,7 +341,8 @@ class Failure(object):
                 self.exception_kwargs == other.exception_kwargs and
                 self.exception_str == other.exception_str and
                 self.traceback_str == other.traceback_str and
-                self.cause == other.cause)
+                self.cause == other.cause and
+                self.generated_on == other.generated_on)
 
     def matches(self, other):
         """Checks if another object is equivalent to this object.
@@ -369,6 +384,11 @@ class Failure(object):
             return self._exc_info[1]
         else:
             return None
+
+    @property
+    def generated_on(self):
+        """Python major version this failure was generated on."""
+        return self._generated_on
 
     @property
     def exception_str(self):
@@ -532,6 +552,7 @@ class Failure(object):
             self._exc_kwargs = {}
         self._traceback_str = dct['traceback_str']
         self._exc_type_names = dct['exc_type_names']
+        self._generated_on = dct['generated_on']
         if 'exc_info' in dct:
             # Tracebacks can't be serialized/deserialized, but since we
             # provide a traceback string (and more) this should be
@@ -605,6 +626,7 @@ class Failure(object):
             'exc_type_names': self.exception_type_names,
             'exc_args': self.exception_args if include_args else tuple(),
             'exc_kwargs': self.exception_kwargs if include_kwargs else {},
+            'generated_on': self.generated_on,
         }
         if self._cause is not None:
             data['cause'] = self._cause.to_dict(include_args=include_args,
@@ -622,4 +644,4 @@ class Failure(object):
                        exc_args=self.exception_args[:],
                        exc_kwargs=self.exception_kwargs.copy(),
                        exc_type_names=self._exc_type_names[:],
-                       cause=cause)
+                       cause=cause, generated_on=self.generated_on)
