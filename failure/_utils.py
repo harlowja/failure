@@ -40,6 +40,12 @@ def cls_to_cls_name(cls):
     return cls_name
 
 
+def extract_roots(exc_type):
+    return to_tuple(
+        reflection.get_all_class_names(exc_type, up_to=BaseException,
+                                       truncate_builtins=False))
+
+
 def array_prefix_matches(src, cmp_to, on_src_empty=False):
     src_len = len(src)
     if src_len == 0:

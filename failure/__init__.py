@@ -15,4 +15,9 @@
 #    under the License.
 
 from .failure import Failure  # noqa
+from .failure import InvalidFormat  # noqa
 from .failure import WrappedFailure  # noqa
+
+from .finders import combine_or  # noqa
+from .finders import match_classes  # noqa
+from .finders import match_modules  # noqa

@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
 #    Copyright (C) 2014 Yahoo! Inc. All Rights Reserved.
+#    Copyright (C) 2016 GoDaddy Inc. All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -23,7 +24,6 @@ import sys
 import traceback
 
 import jsonschema
-from oslo_utils import reflection
 import six
 
 from failure import _utils as utils
@@ -43,12 +43,78 @@ else:
     _py_str = _py3_str
 
 
-class WrappedFailure(Exception):
-    """Exception container holding one or more failure."""
+class InvalidFormat(ValueError):
+    """Exception raised when data is not in the right format."""
 
-    def __init__(self, failures):
+
+class WrappedFailure(Exception):
+    """Wraps one or several failure objects.
+
+    When exception/s cannot be re-raised (for example, because the value and
+    traceback are lost in serialization) or there are several exceptions active
+    at the same time (due to more than one thread raising exceptions), we will
+    wrap the corresponding failure objects into this exception class and
+    *may* reraise this exception type to allow users to handle the contained
+    failures/causes as they see fit...
+
+    See the failure class documentation for a more comprehensive set of reasons
+    why this object *may* be reraised instead of the original exception.
+
+    :param causes: the :py:class:`~failure.Failure` objects
+                   that caused this this exception to be raised.
+    """
+
+    def __init__(self, causes):
         super(WrappedFailure, self).__init__()
-        self.failures = utils.to_tuple(failures)
+        self._causes = []
+        for cause in causes:
+            if cause.check(type(self)) and cause.exception is not None:
+                # NOTE(imelnikov): flatten wrapped failures.
+                self._causes.extend(cause.exception)
+            else:
+                self._causes.append(cause)
+
+    def __iter__(self):
+        """Iterate over failures that caused the exception."""
+        return iter(self._causes)
+
+    def __len__(self):
+        """Return number of wrapped failures."""
+        return len(self._causes)
+
+    def check(self, *exc_classes):
+        """Check if any of exception classes caused the failure/s.
+
+        :param exc_classes: exception types/exception type names to
+                            search for.
+
+        If any of the contained failures were caused by an exception of a
+        given type, the corresponding argument that matched is returned. If
+        not then ``None`` is returned.
+        """
+        if not exc_classes:
+            return None
+        for cause in self:
+            result = cause.check(*exc_classes)
+            if result is not None:
+                return result
+        return None
+
+    def __bytes__(self):
+        buf = six.BytesIO()
+        buf.write(b'WrappedFailure: [')
+        causes_gen = (six.binary_type(cause) for cause in self._causes)
+        buf.write(b", ".join(causes_gen))
+        buf.write(b']')
+        return buf.getvalue()
+
+    def __unicode__(self):
+        buf = six.StringIO()
+        buf.write(u'WrappedFailure: [')
+        causes_gen = (six.text_type(cause) for cause in self._causes)
+        buf.write(u", ".join(causes_gen))
+        buf.write(u']')
+        return buf.getvalue()
 
 
 class Failure(object):
@@ -152,11 +218,12 @@ class Failure(object):
                  exc_kwargs=None, exception_str='',
                  exc_type_names=None, cause=None,
                  traceback_str=''):
+        exc_type_names = utils.to_tuple(exc_type_names)
         if not exc_type_names:
-            raise TypeError("Invalid exception type (no type names"
-                            " provided)")
-        self._exc_type_names = utils.to_tuple(exc_type_names)
-        self._exc_info = utils.to_tuple(exc_info)
+            raise ValueError("Invalid exception type (no type names"
+                             " provided)")
+        self._exc_type_names = exc_type_names
+        self._exc_info = utils.to_tuple(exc_info, on_none=None)
         self._exc_args = utils.to_tuple(exc_args)
         if exc_kwargs:
             self._exc_kwargs = dict(exc_kwargs)
@@ -187,10 +254,7 @@ class Failure(object):
                                  " be provided)")
             exc_args = tuple(getattr(exc_val, 'args', []))
             exc_kwargs = dict(getattr(exc_val, 'kwargs', {}))
-            exc_type_names = tuple(
-                reflection.get_all_class_names(
-                    exc_type, up_to=BaseException,
-                    truncate_builtins=False))
+            exc_type_names = utils.extract_roots(exc_type)
             if not exc_type_names:
                 # This should only be possible if the exception provided
                 # was not really an exception...
@@ -235,8 +299,8 @@ class Failure(object):
                 # See: https://github.com/Julian/jsonschema/issues/148
                 types={'array': (list, tuple)})
         except jsonschema.ValidationError as e:
-            raise ValueError("Failure data not of the"
-                             " expected format: %s" % (e.message))
+            raise InvalidFormat("Failure data not of the"
+                                " expected format: %s" % (e.message))
         else:
             # Ensure that all 'exc_type_names' originate from one of
             # base exceptions, because those are the root exceptions that
@@ -246,7 +310,7 @@ class Failure(object):
                 cause = causes.popleft()
                 root_exc_type = cause['exc_type_names'][-1]
                 if root_exc_type not in cls.BASE_EXCEPTIONS:
-                    raise ValueError(
+                    raise InvalidFormat(
                         "Failure data 'exc_type_names' must"
                         " have an initial exception type that is one"
                         " of %s types: '%s' is not one of those"
@@ -297,9 +361,9 @@ class Failure(object):
 
     @property
     def exception(self):
-        """Exception value, or none if exception value is not present.
+        """Exception value, or ``None`` if exception value is not present.
 
-        Exception value may be lost during serialization.
+        Exception value *may* be lost during serialization.
         """
         if self._exc_info:
             return self._exc_info[1]
@@ -323,7 +387,7 @@ class Failure(object):
 
     @property
     def exception_type_names(self):
-        """Tuple of current exception type **names** (upto ``Exception``)."""
+        """Tuple of current exception type **names**."""
         return self._exc_type_names
 
     @property
@@ -394,9 +458,9 @@ class Failure(object):
         """Check if any of ``exc_classes`` caused the failure.
 
         Arguments of this method can be exception types or type
-        names (stings). If captured exception is instance of
-        exception of given type, the corresponding argument is
-        returned. Else, None is returned.
+        names (strings **fully qualified**). If captured exception is
+        an instance of exception of given type, the corresponding argument
+        is returned, otherwise ``None`` is returned.
         """
         for cls in exc_classes:
             cls_name = utils.cls_to_cls_name(cls)
