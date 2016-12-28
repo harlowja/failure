@@ -316,12 +316,13 @@ class Failure(object):
             # Ensure that all 'exc_type_names' originate from one of
             # base exceptions, because those are the root exceptions that
             # python mandates/provides and anything else is invalid...
-            ok_bases = []
-            for py_ver in sorted(cls.BASE_EXCEPTIONS.keys()):
-                ok_bases.extend(cls.BASE_EXCEPTIONS[py_ver])
             causes = collections.deque([data])
             while causes:
                 cause = causes.popleft()
+                try:
+                    ok_bases = cls.BASE_EXCEPTIONS[cause['generated_on']]
+                except KeyError:
+                    ok_bases = []
                 root_exc_type = cause['exc_type_names'][-1]
                 if root_exc_type not in ok_bases:
                     raise InvalidFormat(
