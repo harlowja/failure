@@ -56,7 +56,7 @@ class ExcInfoUtilsTest(base.BaseTestCase):
         exc_info = _make_exc_info("Woot!")
         self.assertTrue(utils.are_equal_exc_info_tuples(exc_info, exc_info))
 
-    def test_typle_equals_copy(self):
+    def test_tuple_equals_copy(self):
         exc_info = _make_exc_info("Woot!")
         copied = utils.copy_exc_info(exc_info)
         self.assertTrue(utils.are_equal_exc_info_tuples(exc_info, copied))
