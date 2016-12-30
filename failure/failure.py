@@ -47,6 +47,10 @@ class InvalidFormat(ValueError):
     """Exception raised when data is not in the right format."""
 
 
+class NoActiveException(RuntimeError):
+    """Exception raised when no current exception/exc_info() exists."""
+
+
 class WrappedFailure(Exception):
     """Wraps one or several failure objects.
 
@@ -253,7 +257,8 @@ class Failure(object):
         if exc_info is None:
             exc_info = sys.exc_info()
             if not any(exc_info):
-                raise RuntimeError("No exception currently being handled")
+                raise NoActiveException("No exception currently"
+                                        " being handled")
         # This should always be the (type, value, traceback) tuple,
         # either from a prior sys.exc_info() call or from some other
         # creation...

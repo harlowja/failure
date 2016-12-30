@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
 #    Copyright (C) 2014 Yahoo! Inc. All Rights Reserved.
+#    Copyright (C) 2016 GoDaddy Inc. All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -15,7 +16,9 @@
 #    under the License.
 
 from .failure import Failure  # noqa
+
 from .failure import InvalidFormat  # noqa
+from .failure import NoActiveException  # noqa
 from .failure import WrappedFailure  # noqa
 
 from .finders import combine_or  # noqa
