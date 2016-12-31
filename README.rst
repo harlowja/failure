@@ -1,6 +1,13 @@
 Failure
 =======
 
+
+.. image:: https://travis-ci.org/harlowja/failure.png?branch=master
+   :target: https://travis-ci.org/harlowja/failure
+
+Overview
+--------
+
 A tiny library to provide the following::
 
     Failure objects encapsulate exception information so that they can be
