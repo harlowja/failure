@@ -62,14 +62,17 @@ def to_tuple(vals, on_none=()):
         return tuple(vals)
 
 
-def copy_exc_info(exc_info):
+def copy_exc_info(exc_info, deep=False):
     if exc_info is None:
         return None
     exc_type, exc_value, exc_tb = exc_info
     # NOTE(imelnikov): there is no need to copy the exception type, and
     # a shallow copy of the value is fine and we can't copy the traceback since
     # it contains reference to the internal stack frames...
-    return (exc_type, copy.copy(exc_value), exc_tb)
+    if deep:
+        return (exc_type, copy.deepcopy(exc_value), exc_tb)
+    else:
+        return (exc_type, copy.copy(exc_value), exc_tb)
 
 
 def are_equal_exc_info_tuples(ei1, ei2):

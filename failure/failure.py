@@ -18,12 +18,14 @@
 from __future__ import absolute_import
 
 import collections
+import copy
 import itertools
 import os
 import sys
 import traceback
 
 import jsonschema
+from oslo_utils import reflection
 import six
 
 from failure import _utils as utils
@@ -140,9 +142,10 @@ class Failure(object):
       raised. When a failure object is serialized and sent across a channel
       and recreated it is *not* possible to restore the original traceback and
       originating stack frames.
-    * The original exception *type* can not be guaranteed to be found, workers
-      can run code that is not accessible/available when the failure is being
-      deserialized. Even if it was possible to use pickle safely it would not
+    * The original exception *type* can not *always* be guaranteed to be
+      found, certain nodes can run code that is not accessible/available
+      when the failure is being deserialized. Even if it was possible to use
+      pickle safely (which it is not) it would not *always*
       be possible to find the originating exception or associated code in this
       situation.
     * The original exception *type* can not be guaranteed to be constructed in
@@ -150,16 +153,15 @@ class Failure(object):
       has already been created and the failure object can not assume it has
       knowledge (or the ability) to recreate the original type of the captured
       exception (this is especially hard if the original exception was created
-      via a complex process via some custom exception constructor).
-    * The original exception *type* can not be guaranteed to be constructed in
-      a *safe* manner. Importing *foreign* exception types dynamically can be
-      problematic when not done correctly and in a safe manner; since failure
-      objects can capture any exception it would be *unsafe* to try to import
+      via a complex process via some custom exception ``__init__`` method).
+    * The original exception *type* can not *always* be guaranteed to be
+      constructed and/or imported in a *safe* manner. Importing *foreign*
+      exception types dynamically can be problematic when not done
+      correctly and in a safe manner; since failure objects can
+      capture *any* exception it would be *unsafe* to try to import
       those exception types namespaces and modules on the receiver side
-      dynamically (this would create similar issues as the ``pickle`` module in
-      python has where foreign modules can be imported, causing those modules
-      to have code ran when this happens, and this can cause issues and
-      side-effects that the receiver would not have intended to have caused).
+      dynamically (this would create similar issues as the ``pickle`` module
+      has).
 
     TODO(harlowja): use parts of http://bugs.python.org/issue17911 and the
     backport at https://pypi.python.org/pypi/traceback2/ to (hopefully)
@@ -275,10 +277,12 @@ class Failure(object):
             exc_kwargs = dict(getattr(exc_val, 'kwargs', {}))
             exc_type_names = utils.extract_roots(exc_type)
             if not exc_type_names:
+                exc_type_name = reflection.get_class_name(
+                    exc_val, truncate_builtins=False)
                 # This should only be possible if the exception provided
                 # was not really an exception...
                 raise TypeError("Invalid exception type '%s' (not an"
-                                " exception)" % (exc_type,))
+                                " exception)" % (exc_type_name))
             exception_str = utils.exception_message(exc_val)
             if hasattr(exc_val, '__traceback_str__'):
                 traceback_str = exc_val.__traceback_str__
@@ -647,15 +651,36 @@ class Failure(object):
                                                 include_kwargs=include_kwargs)
         return data
 
-    def copy(self):
-        """Copies this object."""
+    def copy(self, deep=False):
+        """Copies this object (shallow or deep).
+
+        :param deep: boolean indicating whether to do a deep copy (or a
+                     shallow copy).
+        """
         cause = self._cause
         if cause is not None:
-            cause = cause.copy()
-        return Failure(exc_info=utils.copy_exc_info(self.exc_info),
-                       exception_str=self.exception_str,
-                       traceback_str=self.traceback_str,
-                       exc_args=self.exception_args[:],
-                       exc_kwargs=self.exception_kwargs.copy(),
-                       exc_type_names=self._exc_type_names[:],
-                       cause=cause, generated_on=self.generated_on)
+            cause = cause.copy(deep=deep)
+        exc_info = utils.copy_exc_info(self.exc_info, deep=deep)
+        exc_args = self.exception_args
+        exc_kwargs = self.exception_kwargs
+        if deep:
+            exc_args = copy.deepcopy(exc_args)
+            exc_kwargs = copy.deepcopy(exc_kwargs)
+        else:
+            exc_args = tuple(exc_args)
+            exc_kwargs = exc_kwargs.copy()
+        # These are just simple int/strings, so deep copy doesn't really
+        # matter/apply here (as they are immutable anyway).
+        exc_type_names = tuple(self._exc_type_names)
+        generated_on = self._generated_on
+        if generated_on:
+            generated_on = tuple(generated_on)
+        # NOTE(harlowja): use `self.__class__` here so that we can work
+        # with subclasses (assuming anyone makes one).
+        return self.__class__(exc_info=exc_info,
+                              exception_str=self.exception_str,
+                              traceback_str=self.traceback_str,
+                              exc_args=exc_args,
+                              exc_kwargs=exc_kwargs,
+                              exc_type_names=exc_type_names,
+                              cause=cause, generated_on=generated_on)
