@@ -31,20 +31,6 @@ import six
 from failure import _utils as utils
 
 
-def _py2_str(self):
-    return self.__unicode__().encode('utf-8')
-
-
-def _py3_str(self):
-    return self.__unicode__()
-
-
-if six.PY2:
-    _py_str = _py2_str
-else:
-    _py_str = _py3_str
-
-
 class InvalidFormat(ValueError):
     """Exception raised when data is not in the right format."""
 
@@ -53,7 +39,7 @@ class NoActiveException(RuntimeError):
     """Exception raised when no current exception/exc_info() exists."""
 
 
-class WrappedFailure(Exception):
+class WrappedFailure(utils.StrMixin, Exception):
     """Wraps one or several failure objects.
 
     When exception/s cannot be re-raised (for example, because the value and
@@ -123,7 +109,7 @@ class WrappedFailure(Exception):
         return buf.getvalue()
 
 
-class Failure(object):
+class Failure(utils.StrMixin):
     """An immutable object that represents failure.
 
     Failure objects encapsulate exception information so that they can be
@@ -231,8 +217,6 @@ class Failure(object):
         },
     }
 
-    __str__ = _py_str
-
     def __init__(self, exc_info=None, exc_args=None,
                  exc_kwargs=None, exception_str='',
                  exc_type_names=None, cause=None,
@@ -254,7 +238,9 @@ class Failure(object):
         self._generated_on = utils.to_tuple(generated_on, on_none=None)
 
     @classmethod
-    def from_exc_info(cls, exc_info=None, retain_exc_info=True):
+    def from_exc_info(cls, exc_info=None,
+                      retain_exc_info=True,
+                      cause=None, find_cause=True):
         """Creates a failure object from a ``sys.exc_info()`` tuple."""
         if exc_info is None:
             exc_info = sys.exc_info()
@@ -294,17 +280,19 @@ class Failure(object):
                     traceback_str = ''
             if not retain_exc_info:
                 exc_info = None
+            if find_cause and cause is None:
+                cause = cls._extract_cause(exc_val)
             return cls(exc_info=exc_info, exc_args=exc_args,
                        exc_kwargs=exc_kwargs, exception_str=exception_str,
-                       exc_type_names=exc_type_names,
-                       cause=cls._extract_cause(exc_val),
+                       exc_type_names=exc_type_names, cause=cause,
                        traceback_str=traceback_str,
                        generated_on=sys.version_info[0:2])
         finally:
             del exc_type, exc_val, exc_tb
 
     @classmethod
-    def from_exception(cls, exception, retain_exc_info=True):
+    def from_exception(cls, exception, retain_exc_info=True,
+                       cause=None, find_cause=True):
         """Creates a failure object from a exception instance."""
         exc_info = (
             type(exception),
@@ -312,7 +300,8 @@ class Failure(object):
             getattr(exception, '__traceback__', None)
         )
         return cls.from_exc_info(exc_info=exc_info,
-                                 retain_exc_info=retain_exc_info)
+                                 retain_exc_info=retain_exc_info,
+                                 cause=cause, find_cause=find_cause)
 
     @classmethod
     def validate(cls, data):
@@ -582,7 +571,7 @@ class Failure(object):
             # created a fake traceback object...
             exc_info = list(dct['exc_info'])
             while len(exc_info) < 3:
-                dct['exc_info'].append(None)
+                exc_info.append(None)
             self._exc_info = tuple(exc_info[0:3])
         else:
             self._exc_info = None
@@ -603,23 +592,32 @@ class Failure(object):
         #
         # See: https://www.python.org/dev/peps/pep-0415/ for why/what
         # the '__suppress_context__' is/means/implies...
-        suppress_context = getattr(exc_val,
-                                   '__suppress_context__', False)
-        if suppress_context:
-            attr_lookups = ['__cause__']
-        else:
-            attr_lookups = ['__cause__', '__context__']
-        nested_exc_val = None
-        for attr_name in attr_lookups:
-            attr_val = getattr(exc_val, attr_name, None)
-            if attr_val is None:
-                continue
-            nested_exc_val = attr_val
-            break
-        if nested_exc_val is not None:
-            return cls.from_exception(nested_exc_val)
-        else:
-            return None
+        nested_exc_vals = []
+        seen = [exc_val]
+        while True:
+            suppress_context = getattr(
+                exc_val, '__suppress_context__', False)
+            if suppress_context:
+                attr_lookups = ['__cause__']
+            else:
+                attr_lookups = ['__cause__', '__context__']
+            nested_exc_val = None
+            for attr_name in attr_lookups:
+                attr_val = getattr(exc_val, attr_name, None)
+                if attr_val is None:
+                    continue
+                nested_exc_val = attr_val
+            if nested_exc_val is None or nested_exc_val in seen:
+                break
+            seen.append(nested_exc_val)
+            nested_exc_vals.append(nested_exc_val)
+            exc_val = nested_exc_val
+        last_cause = None
+        for exc_val in reversed(nested_exc_vals):
+            f = cls.from_exception(exc_val, cause=last_cause,
+                                   find_cause=False)
+            last_cause = f
+        return last_cause
 
     @classmethod
     def from_dict(cls, data):

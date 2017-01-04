@@ -397,19 +397,22 @@ class FailureCausesTest(base.BaseTestCase):
             self._raise_many(["Still still not working",
                               "Still not working", "Not working"])
         except RuntimeError:
-            f = failure.Failure()
+            f = failure.Failure.from_exc_info()
 
         self.assertIsNotNone(f)
-        self.assertEqual(2, len(f.causes))
-        self.assertEqual("Still not working", f.causes[0].exception_str)
-        self.assertEqual("Not working", f.causes[1].exception_str)
+        causes = list(f.iter_causes())
+        self.assertEqual(2, len(causes))
+        self.assertEqual("Still not working", causes[0].exception_str)
+        self.assertEqual("Not working", causes[1].exception_str)
 
-        f = f.causes[0]
-        self.assertEqual(1, len(f.causes))
-        self.assertEqual("Not working", f.causes[0].exception_str)
+        f = causes[0]
+        causes = list(f.iter_causes())
+        self.assertEqual(1, len(causes))
+        self.assertEqual("Not working", causes[0].exception_str)
 
-        f = f.causes[0]
-        self.assertEqual(0, len(f.causes))
+        f = causes[0]
+        causes = list(f.iter_causes())
+        self.assertEqual(0, len(causes))
 
     def test_causes_to_from_dict(self):
         f = None
@@ -417,22 +420,25 @@ class FailureCausesTest(base.BaseTestCase):
             self._raise_many(["Still still not working",
                               "Still not working", "Not working"])
         except RuntimeError:
-            f = failure.Failure()
+            f = failure.Failure.from_exc_info()
 
         self.assertIsNotNone(f)
         d_f = f.to_dict()
         failure.Failure.validate(d_f)
         f = failure.Failure.from_dict(d_f)
-        self.assertEqual(2, len(f.causes))
-        self.assertEqual("Still not working", f.causes[0].exception_str)
-        self.assertEqual("Not working", f.causes[1].exception_str)
+        causes = list(f.iter_causes())
+        self.assertEqual(2, len(causes))
+        self.assertEqual("Still not working", causes[0].exception_str)
+        self.assertEqual("Not working", causes[1].exception_str)
 
-        f = f.causes[0]
-        self.assertEqual(1, len(f.causes))
-        self.assertEqual("Not working", f.causes[0].exception_str)
+        f = causes[0]
+        causes = list(f.iter_causes())
+        self.assertEqual(1, len(causes))
+        self.assertEqual("Not working", causes[0].exception_str)
 
-        f = f.causes[0]
-        self.assertEqual(0, len(f.causes))
+        f = causes[0]
+        causes = list(f.iter_causes())
+        self.assertEqual(0, len(causes))
 
     def test_causes_pickle(self):
         f = None
@@ -440,22 +446,25 @@ class FailureCausesTest(base.BaseTestCase):
             self._raise_many(["Still still not working",
                               "Still not working", "Not working"])
         except RuntimeError:
-            f = failure.Failure()
+            f = failure.Failure.from_exc_info()
 
         self.assertIsNotNone(f)
         p_f = pickle.dumps(f)
         f = pickle.loads(p_f)
 
-        self.assertEqual(2, len(f.causes))
-        self.assertEqual("Still not working", f.causes[0].exception_str)
-        self.assertEqual("Not working", f.causes[1].exception_str)
+        causes = list(f.iter_causes())
+        self.assertEqual(2, len(causes))
+        self.assertEqual("Still not working", causes[0].exception_str)
+        self.assertEqual("Not working", causes[1].exception_str)
 
-        f = f.causes[0]
-        self.assertEqual(1, len(f.causes))
-        self.assertEqual("Not working", f.causes[0].exception_str)
+        f = causes[0]
+        causes = list(f.iter_causes())
+        self.assertEqual(1, len(causes))
+        self.assertEqual("Not working", causes[0].exception_str)
 
-        f = f.causes[0]
-        self.assertEqual(0, len(f.causes))
+        f = causes[0]
+        causes = list(f.iter_causes())
+        self.assertEqual(0, len(causes))
 
     def test_causes_suppress_context(self):
         f = None
@@ -466,7 +475,8 @@ class FailureCausesTest(base.BaseTestCase):
             except RuntimeError as e:
                 six.raise_from(e, None)
         except RuntimeError:
-            f = failure.Failure()
+            f = failure.Failure.from_exc_info()
 
         self.assertIsNotNone(f)
-        self.assertEqual([], list(f.causes))
+        causes = list(f.iter_causes())
+        self.assertEqual([], list(causes))

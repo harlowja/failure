@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
 #    Copyright (C) 2014 Yahoo! Inc. All Rights Reserved.
+#    Copyright (C) 2016 GoDaddy Inc. All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
 #    not use this file except in compliance with the License. You may obtain
@@ -18,10 +19,30 @@ import copy
 import traceback
 import types
 
+import six
+
 from oslo_utils import encodeutils
 from oslo_utils import reflection
 
 exception_message = encodeutils.exception_to_unicode
+
+
+class StrMixin(object):
+    """Mixin that helps deal with the PY2 and PY3 method differences.
+
+    http://lucumr.pocoo.org/2011/1/22/forwards-compatible-python/ explains
+    why this is quite useful...
+    """
+
+    if six.PY2:
+        def __str__(self):
+            try:
+                return self.__bytes__()
+            except AttributeError:
+                return self.__unicode__().encode('utf-8')
+    else:
+        def __str__(self):
+            return self.__unicode__()
 
 
 def mod_to_mod_name(mod):
