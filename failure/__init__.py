@@ -17,6 +17,8 @@
 
 from .failure import Failure  # noqa
 
+from_exc_info = Failure.from_exc_info  # noqa
+
 from .failure import InvalidFormat  # noqa
 from .failure import NoActiveException  # noqa
 from .failure import WrappedFailure  # noqa

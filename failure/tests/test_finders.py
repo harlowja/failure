@@ -14,8 +14,58 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import pickle
+
 from oslotest import base
+
+import failure
+from failure import finders
+
+
+class MySpecialError(Exception):
+    pass
 
 
 class FindersTest(base.BaseTestCase):
-    pass
+    def test_regeneration_cls_finder(self):
+        f = None
+        try:
+            raise IOError("I broke")
+        except IOError:
+            f = failure.from_exc_info()
+        self.assertIsNotNone(f)
+        f = pickle.dumps(f)
+        f = pickle.loads(f)
+        e = self.assertRaises(
+            IOError,
+            f.reraise, cause_cls_finder=failure.match_classes([IOError]))
+        self.assertEqual(str(e), "I broke")
+
+    def test_regeneration_no_cls_finder(self):
+        f = None
+        try:
+            raise IOError("I broke")
+        except IOError:
+            f = failure.from_exc_info()
+        self.assertIsNotNone(f)
+        f = f.to_dict()
+        f = failure.Failure.from_dict(f)
+        e = self.assertRaises(
+            failure.WrappedFailure,
+            f.reraise,
+            cause_cls_finder=failure.match_classes([MySpecialError]))
+
+    def test_regeneration_mod_finder(self):
+        f = None
+        try:
+            raise IOError("I broke")
+        except IOError:
+            f = failure.from_exc_info()
+        self.assertIsNotNone(f)
+        f = pickle.dumps(f)
+        f = pickle.loads(f)
+        e = self.assertRaises(
+            IOError,
+            f.reraise,
+            cause_cls_finder=failure.match_modules([IOError.__module__]))
+        self.assertEqual(str(e), "I broke")
