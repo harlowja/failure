@@ -1,3 +1,4 @@
 nose # LGPL
 testtools>=1.4.0 # MIT
 oslotest
+sphinx-rtd-theme
